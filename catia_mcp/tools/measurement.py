@@ -11,12 +11,17 @@ from typing import Any
 
 from catia_mcp.connection import CATIAConnection
 
-# CATIA V5's SPAWorkbench Measurable API returns every value in MKS units
-# (meters, m2, m3, kg.m2) regardless of the document's display units.
-# Feature creation APIs, by contrast, take millimeters. All measurement
-# results are therefore converted to mm-based units here, at the server
-# boundary, so agents always see consistent mm/mm2/mm3 values.
-_M_TO_MM = 1000.0
+# CATIA V5's SPAWorkbench Measurable API mixes unit systems. Field-verified
+# on V5R20 (student build) against known geometry. Feature creation APIs, by
+# contrast, always take millimeters.
+#
+#   * Area / Volume are MKS (m2 / m3) and MUST be scaled: see _M2_TO_MM2,
+#     _M3_TO_MM3. Check: a 100x60x20 pad reads 1.2e-4 m3 -> 120000 mm3.
+#   * Lengths are ALREADY in the document unit (mm) and must NOT be scaled:
+#     GetCOG / GetPoint / GetPlane (see read_measurable_array) and
+#     GetMinimumDistance. Calibrate any new length probe against a known
+#     distance before trusting it -- scaling a length by 1000 silently
+#     inflates it 1000x.
 _M2_TO_MM2 = 1e6
 _M3_TO_MM3 = 1e9
 
@@ -277,10 +282,14 @@ class MeasurementTools:
         ref1 = self._resolve_reference(part, elem1_name)
         ref2 = self._resolve_reference(part, elem2_name)
 
-        # Area/Volume are MKS (field-confirmed); the minimum distance is
-        # assumed MKS too and converted to mm. Not yet field-verified.
+        # FIELD-VERIFIED V5R20: GetMinimumDistance already returns the
+        # document length unit (mm), exactly like GetCOG/GetPoint -- it is NOT
+        # MKS like Area/Volume. Calibrated against two known distances:
+        # concentric circles r=30/r=45 -> 15.0000, and two parallel planes
+        # 50 mm apart -> 50.0000. The former `* _M_TO_MM` reported those as
+        # 15000 and 50000 (i.e. micrometres labelled mm).
         measurable = spa.GetMeasurable(ref1)
-        distance = measurable.GetMinimumDistance(ref2) * _M_TO_MM
+        distance = measurable.GetMinimumDistance(ref2)
 
         return f"Minimum distance between '{elem1_name}' and '{elem2_name}': {distance:.4f} mm"
 

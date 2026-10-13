@@ -171,7 +171,15 @@ class AssemblyTools:
             },
             {
                 "name": "catia_list_components",
-                "description": "List all components in the active assembly/product with their names and positions.",
+                "description": (
+                    "List all components in the active assembly/product with name, rotation and position. "
+                    "IMPORTANT: always check 'read_ok' per component. On this machine "
+                    "Position.GetComponents never fills the array (silent failure), so read_ok=false "
+                    "together with an all-zero 'rotation' means the transform could NOT be read — "
+                    "in that case position (0,0,0) is meaningless and does NOT mean 'at the origin'. "
+                    "Rotation is reported before position because an unmoved component legitimately has "
+                    "position (0,0,0), so position alone cannot distinguish 'read 0' from 'read nothing'."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {},
@@ -293,7 +301,20 @@ class AssemblyTools:
         # Get the current position matrix (4x3 = 12 values in CATIA)
         position = component.Position
         matrix = [0.0] * 12
-        position.GetComponents(matrix)
+        base_read_ok = False
+        try:
+            position.GetComponents(matrix)
+            # ⚠️ 传进去的是【按值编组】的 Python list：失败时【不抛异常】，
+            #    数组原样保持传进去的全 0 —— 静默失败。
+            #    判据：**旋转矩阵不可能是全 0**（行列式 = 0，不是合法变换）。
+            base_read_ok = any(abs(v) > 1e-12 for v in matrix[:9])
+        except Exception:
+            base_read_ok = False
+        if not base_read_ok:
+            # 基准读不回来 ⇒ 旋转基准取【单位阵】。
+            # ❗ 原实现直接拿全 0 当基准左乘（见下方 old = matrix[:9]），
+            #    会把 9 个旋转元素【全部写成 0】—— 姿态被写坏，且平移上完全看不出来。
+            matrix[0] = matrix[4] = matrix[8] = 1.0
 
         # Apply translation (values 9, 10, 11 are tx, ty, tz)
         matrix[9] += args.get("tx", 0)
@@ -337,10 +358,19 @@ class AssemblyTools:
         position.SetComponents(matrix)
         self.conn.refresh_display()
 
+        caveat = (
+            ""
+            if base_read_ok
+            else "\n⚠️ 基准位置【读不回来】（GetComponents 静默失败，本机 11 种写法实测全废）："
+                 "旋转基准已按【单位阵】处理（不再是全 0，姿态不会写坏）；"
+                 "但平移是在全 0 基准上累加的 ⇒ 本次位移实为【相对全局原点的绝对定位】，"
+                 "不是相对当前位置的增量。别拿它做增量移动。"
+        )
         return (
             f"Component '{args['component_name']}' moved: "
             f"T=({args.get('tx', 0)}, {args.get('ty', 0)}, {args.get('tz', 0)}) mm, "
             f"R=({args.get('rx', 0)}, {args.get('ry', 0)}, {args.get('rz', 0)})°"
+            f"{caveat}"
         )
 
     def _list_components(self) -> str:
@@ -352,19 +382,37 @@ class AssemblyTools:
             comp = products.Item(i)
             pos = comp.Position
             matrix = [0.0] * 12
+            read_error = None
             try:
                 pos.GetComponents(matrix)
-            except Exception:
-                pass
+            except Exception as exc:
+                read_error = f"{type(exc).__name__}: {exc}"
+
+            # ⚠️ 传进去的是【按值编组】的 Python list：失败时【不抛异常】，
+            #    数组原样保持传进去的全 0 —— 静默失败。
+            #    判据：**旋转矩阵不可能是全 0**（行列式 = 0，不是合法变换）。
+            read_ok = any(abs(v) > 1e-12 for v in matrix[:9])
+            if not read_ok and read_error is None:
+                read_error = (
+                    "GetComponents 未填充数组（旋转 9 元全为 0，不是合法变换；"
+                    "pywin32 按值编组导致静默失败，本机 11 种写法实测全废）"
+                )
+
             components.append({
                 "index": i,
                 "name": comp.Name,
                 "part_number": comp.PartNumber,
+                "read_ok": read_ok,
+                # ⚠️ 旋转【必须】先于平移看：未移动组件的平移本来就是 (0,0,0)，
+                #    只看平移【无法区分】"读到了 0" 和 "什么都没读到"。
+                #    原实现只打印平移 —— 这正是这个 bug 能藏住的原因。
+                "rotation": [round(v, 6) for v in matrix[:9]],
                 "position": {
                     "x": round(matrix[9], 3),
                     "y": round(matrix[10], 3),
                     "z": round(matrix[11], 3),
                 },
+                **({"read_error": read_error} if read_error else {}),
             })
 
         if not components:

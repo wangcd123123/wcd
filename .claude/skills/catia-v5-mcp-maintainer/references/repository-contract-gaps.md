@@ -99,3 +99,36 @@ The baseline does not establish all of the following production primitives:
 - per-mutation material-effect classification;
 - native update diagnostics and locale-independent feature typing;
 - exact CAA/BRep topology helpers.
+
+---
+
+# Field-fix: SPAWorkbench must be taken from the DOCUMENT, not the Application (B30)
+
+**RESOLVED in 0.2.2 — kept as a regression check.** The measurement tools now
+resolve the workbench from the active document first (`doc.GetWorkbench`) with the
+application-level call only as a fallback, and the non-existent
+`Measurable.GetBoundingBox` path has been removed (bounding box is a
+`Topology.Vertex` sweep, capped and self-reporting truncation). If
+`CATIA.Application.GetWorkbench` ever reappears in an error, the fallback has been
+reached and the document-level call failed — investigate that, do not paper over it.
+
+Observed on CATIA V5 B30 (DEMO/Student), win32com late binding, 2026-08-31.
+
+- `catia_get_inertia` and `catia_get_bounding_box` fail with error
+  `CATIA.Application.GetWorkbench`.
+- Cause: the measurement tools call `application.GetWorkbench("SPAWorkbench")`,
+  which is invalid on this build.
+- Fix: take the workbench from the active PartDocument instead:
+      spa = partDoc.GetWorkbench("SPAWorkbench")
+      ref = part.CreateReferenceFromObject(body)
+      meas = spa.GetMeasurable(ref)
+  The document-level call succeeds where the app-level one does not.
+- Caveat: on this same build, `Measurable.GetBoundingBox / GetMinimumBox / GetBox /
+  GetCOG` are still rejected by name (late-binding). For mass/volume prefer the
+  material-independent path `partDoc.Product.Analyze.Mass|Volume` and multiply by the
+  real density when the part has no material (default density = 1 g/cm3). See the
+  production-operator failure-recovery notes P1/P2 for full detail.
+- Also still true in 0.2.2 and **not** fixed: `connection.py` keeps a
+  `win32com.client.Dispatch` fallback when `GetActiveObject` fails. On a workstation
+  that must stay single-instance this silently attaches to an empty CATIA instance
+  (0 documents). Do not let that path run; connect to the running instance.

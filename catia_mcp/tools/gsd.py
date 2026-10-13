@@ -428,7 +428,12 @@ class GSDTools:
                 "name": "catia_gsd_split",
                 "description": (
                     "Split an element by a cutting element, keeping one side. "
-                    "Use orientation to flip which side is kept."
+                    "The kept side is NOT obvious from the geometry: "
+                    "FIELD-VERIFIED on V5R20, a cylinder extruded along +Z and "
+                    "cut by a parallel plane keeps the +Z half with "
+                    "reverse=false and the -Z half with reverse=true. Verify "
+                    "which side you got with catia_measure_distance from the "
+                    "result to a known element instead of assuming."
                 ),
                 "inputSchema": {
                     "type": "object",

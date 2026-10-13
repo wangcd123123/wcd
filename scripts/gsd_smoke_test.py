@@ -7,9 +7,16 @@ fresh Part document.
 
 Usage (from repo root, with a Python that has pywin32):
     python scripts/gsd_smoke_test.py
+    python scripts/gsd_smoke_test.py --skip-save
 
 Outputs a PASS/FAIL line per tool, saves the part and a screenshot next
 to the repo, and exits non-zero if any step failed.
+
+``--skip-save`` (or ``CATIA_SMOKE_SKIP_SAVE=1``) omits the save/close steps and deliberately
+leaves the test document open so the geometry stays visible for inspection. Workstation
+workaround: the CATIA V5 B30 DEMO/Student build here cannot ``SaveAs`` or ``ExportData`` at
+all — "您没有权限来执行此操作" — for every path and even for a fresh empty Part. See
+``.claude/skills/catia-v5-production-operator/references/local-workstation-notes.md``.
 """
 
 from __future__ import annotations
@@ -25,6 +32,9 @@ from catia_mcp.tools.export import ExportTools  # noqa: E402
 from catia_mcp.tools.gsd import GSDTools  # noqa: E402
 
 OUTPUT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Student/DEMO CATIA builds on this workstation reject every SaveAs/ExportData call.
+SKIP_SAVE = ("--skip-save" in sys.argv) or os.environ.get("CATIA_SMOKE_SKIP_SAVE") == "1"
 
 results: list[tuple[str, str, str]] = []  # (status, label, message)
 
@@ -159,22 +169,33 @@ def main() -> int:
         export.execute("catia_screenshot", {"file_path": shot_path}),
     )[-1])
 
-    part_path = os.path.join(OUTPUT_DIR, "GSD_SmokeTest.CATPart")
-    n = 2
-    while os.path.exists(part_path):
-        part_path = os.path.join(OUTPUT_DIR, f"GSD_SmokeTest_{n}.CATPart")
-        n += 1
-    step("save part", lambda: conn.active_document.SaveAs(part_path) or part_path)
-    step("close test document", lambda: conn.active_document.Close())
+    if SKIP_SAVE:
+        # Deliberately leaves the document OPEN so the built geometry stays on screen.
+        results.append(("SKIP", "save part", "student build cannot SaveAs/ExportData"))
+        results.append(("SKIP", "close test document", "left open for inspection"))
+        print("  SKIP  save part (student build: SaveAs unsupported)")
+        print("  SKIP  close test document (left open on purpose)")
+    else:
+        part_path = os.path.join(OUTPUT_DIR, "GSD_SmokeTest.CATPart")
+        n = 2
+        while os.path.exists(part_path):
+            part_path = os.path.join(OUTPUT_DIR, f"GSD_SmokeTest_{n}.CATPart")
+            n += 1
+        step("save part", lambda: conn.active_document.SaveAs(part_path) or part_path)
+        step("close test document", lambda: conn.active_document.Close())
 
     # ── Summary ──
     failed = [r for r in results if r[0] == "FAIL"]
+    skipped = [r for r in results if r[0] == "SKIP"]
     print()
     print("=" * 60)
-    print(f"GSD smoke test: {len(results) - len(failed)}/{len(results)} passed")
+    print(f"GSD smoke test: {len(results) - len(failed) - len(skipped)}/{len(results) - len(skipped)} passed"
+          + (f", {len(skipped)} skipped" if skipped else ""))
     for status, label, message in failed:
         print(f"  {status}  {label}")
         print(f"        {message}")
+    for status, label, message in skipped:
+        print(f"  {status}  {label}: {message}")
     print("=" * 60)
     return 1 if failed else 0
 
